@@ -184,7 +184,7 @@ npm i -D drizzle-kit
 # package.json: { "type": "module", "scripts": {
 #   "db:generate": "drizzle-kit generate",
 #   "db:migrate":  "node migrate.js",
-#   "test:db":     "node --test tests/" } }
+#   "test":        "node --test" } }   # plain `node --test`: a directory argument fails on Node 22
 npm run db:generate -- --name=schema                 # tables from schema.js  -> 0000_schema.sql
 npx drizzle-kit generate --custom --name=db_logic    # empty file you fill with 5.4  -> 0001
 npx drizzle-kit generate --custom --name=roles_optional   # 5.5 -> 0002
@@ -613,32 +613,32 @@ Users cannot be seeded in plain SQL because the password hashes come from the ap
 
 ### 5.5 Custom migration `0002_roles_optional.sql` (optional hardening)
 
-Defense in depth for **[INC-0304]**. If your host lets you create roles, the customer read path physically cannot read notes. If it doesn't (some free tiers), skip this file. The views and the leak tests still protect you, so record the gap in the closing note.
+Defense in depth for **[INC-0304]**. If your host lets you create roles, the customer read path physically cannot read notes. If it doesn't, the migration **skips itself** with a `NOTICE` instead of failing, so it can never block a deploy. The views and the leak tests still protect you, so record the gap in the closing note.
 
 ```sql
-DO $$ BEGIN
+-- OPTIONAL hardening. Skips itself (with a NOTICE) on hosts that do not let the
+-- migration user create roles, so it can never block a deploy.
+DO $$
+BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'frontdesk_app') THEN
     CREATE ROLE frontdesk_app NOLOGIN;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'frontdesk_customer_reader') THEN
     CREATE ROLE frontdesk_customer_reader NOLOGIN;
   END IF;
+
+  -- Main application role: full working access, but cannot modify history.
+  GRANT SELECT, INSERT, UPDATE ON users, customers, tickets, sla_cycles, sla_pauses,
+        sla_policies, holidays, settings TO frontdesk_app;
+  GRANT SELECT, INSERT ON messages, ticket_events TO frontdesk_app;   -- no UPDATE/DELETE
+  GRANT SELECT ON customer_tickets, customer_messages, agent_ticket_list TO frontdesk_app;
+  GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO frontdesk_app;
+
+  -- Customer READ role: sees two views and nothing else.
+  GRANT SELECT ON customer_tickets, customer_messages TO frontdesk_customer_reader;
+EXCEPTION WHEN insufficient_privilege THEN
+  RAISE NOTICE 'Skipping optional DB roles (insufficient privilege): %', SQLERRM;
 END $$;
-
--- Main application role: full working access, but cannot modify history.
-GRANT SELECT, INSERT, UPDATE ON users, customers, tickets, sla_cycles, sla_pauses,
-      sla_policies, holidays, settings TO frontdesk_app;
-GRANT SELECT, INSERT ON messages, ticket_events TO frontdesk_app;   -- no UPDATE/DELETE
-GRANT SELECT ON customer_tickets, customer_messages, agent_ticket_list TO frontdesk_app;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO frontdesk_app;
-
--- Customer READ role: sees two views and nothing else.
-GRANT SELECT ON customer_tickets, customer_messages TO frontdesk_customer_reader;
-
--- Then create login users and add them to these roles, for example:
---   CREATE ROLE fd_api    LOGIN PASSWORD '...' IN ROLE frontdesk_app;
---   CREATE ROLE fd_public LOGIN PASSWORD '...' IN ROLE frontdesk_customer_reader;
--- Customer READ endpoints use a separate pg Pool connected as fd_public.
 ```
 
 > Customer **writes** (new ticket, customer reply, reopen) go through the main pool, because they also touch SLA and status rows. They never `SELECT` from `messages`. The only message reads on the customer path use the `customer_messages` view through the reader pool.
