@@ -10,6 +10,7 @@ export function customerActor(customerId) {
   return { type: 'customer', customerId };
 }
 
+// Message body text must never be copied into event payloads.
 export async function logEvent(tx, {
   ticketId,
   type,
