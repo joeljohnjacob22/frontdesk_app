@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
 import {
   agentTicketList,
   customerMessages,
@@ -13,7 +13,6 @@ import {
 } from '../../db/schema.js';
 import { HttpError } from '../lib/errors.js';
 import { formatTicketNo, iso } from '../lib/format.js';
-import { hashToken } from '../lib/tokens.js';
 import { dbClock } from './tickets.js';
 
 const ACTIVE_STATUSES = ['new', 'open', 'waiting_on_customer'];
@@ -221,16 +220,32 @@ export function createQueries({ db, customerDb = db, clock = dbClock }) {
       return db.select({
         id: users.id,
         name: users.name,
+        email: users.email,
         role: users.role,
         active: users.active,
       })
         .from(users)
+        .where(inArray(users.role, ['agent', 'lead']))
         .orderBy(asc(users.name));
     },
 
-    async getCustomerTicket(token) {
-      const hash = hashToken(token);
-      const [ticket] = await customerDb.select({
+    async listCustomerAccounts() {
+      return db.select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        active: users.active,
+        passwordChangeRequired: users.passwordChangeRequired,
+        createdAt: users.createdAt,
+      })
+        .from(users)
+        .where(eq(users.role, 'customer'))
+        .orderBy(asc(users.name));
+    },
+
+    async listCustomerTickets(user) {
+      const rows = await customerDb.select({
+        id: customerTickets.id,
         ticketNo: customerTickets.ticketNo,
         subject: customerTickets.subject,
         status: customerTickets.status,
@@ -240,7 +255,66 @@ export function createQueries({ db, customerDb = db, clock = dbClock }) {
         closedAt: customerTickets.closedAt,
       })
         .from(customerTickets)
-        .where(eq(customerTickets.accessTokenHash, hash));
+        .where(and(
+          eq(customerTickets.customerId, user.customerId),
+          gte(customerTickets.createdAt, user.createdAt),
+        ))
+        .orderBy(desc(customerTickets.createdAt), desc(customerTickets.id));
+      const recentMessages = rows.length === 0 ? [] : await customerDb
+        .selectDistinctOn([customerMessages.ticketId], {
+          ticketId: customerMessages.ticketId,
+          authorType: customerMessages.authorType,
+          createdAt: customerMessages.createdAt,
+        })
+        .from(customerMessages)
+        .where(and(
+          eq(customerMessages.customerId, user.customerId),
+          inArray(customerMessages.ticketId, rows.map((ticket) => ticket.id)),
+        ))
+        .orderBy(
+          customerMessages.ticketId,
+          desc(customerMessages.createdAt),
+          desc(customerMessages.id),
+        );
+      const latestByTicket = new Map(recentMessages.map((message) => [message.ticketId, message]));
+      rows.sort((a, b) => {
+        const activityA = latestByTicket.get(a.id)?.createdAt ?? a.createdAt;
+        const activityB = latestByTicket.get(b.id)?.createdAt ?? b.createdAt;
+        return activityB.getTime() - activityA.getTime() || b.id - a.id;
+      });
+      const now = await clock(customerDb);
+
+      return rows.map((ticket) => ({
+        id: ticket.id,
+        ticketNo: formatTicketNo(ticket.ticketNo),
+        subject: ticket.subject,
+        status: ticket.status,
+        createdAt: iso(ticket.createdAt),
+        lastActivityAt: iso(latestByTicket.get(ticket.id)?.createdAt ?? ticket.createdAt),
+        hasNewReply: latestByTicket.get(ticket.id)?.authorType === 'staff',
+        canReopen: ticket.status === 'resolved'
+          && ticket.reopenUntil !== null
+          && ticket.reopenUntil >= now,
+      }));
+    },
+
+    async getCustomerTicket(id, user) {
+      const [ticket] = await customerDb.select({
+        id: customerTickets.id,
+        ticketNo: customerTickets.ticketNo,
+        subject: customerTickets.subject,
+        status: customerTickets.status,
+        createdAt: customerTickets.createdAt,
+        resolvedAt: customerTickets.resolvedAt,
+        reopenUntil: customerTickets.reopenUntil,
+        closedAt: customerTickets.closedAt,
+      })
+        .from(customerTickets)
+        .where(and(
+          eq(customerTickets.id, id),
+          eq(customerTickets.customerId, user.customerId),
+          gte(customerTickets.createdAt, user.createdAt),
+        ));
       if (!ticket) throw new HttpError(404, 'ticket_not_found', 'Ticket not found');
 
       const thread = await customerDb.select({
@@ -251,11 +325,15 @@ export function createQueries({ db, customerDb = db, clock = dbClock }) {
         createdAt: customerMessages.createdAt,
       })
         .from(customerMessages)
-        .where(eq(customerMessages.accessTokenHash, hash))
+        .where(and(
+          eq(customerMessages.ticketId, id),
+          eq(customerMessages.customerId, user.customerId),
+        ))
         .orderBy(asc(customerMessages.createdAt), asc(customerMessages.id));
       const now = await clock(customerDb);
 
       return {
+        id: ticket.id,
         ticketNo: formatTicketNo(ticket.ticketNo),
         subject: ticket.subject,
         status: ticket.status,

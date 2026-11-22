@@ -11,7 +11,7 @@ const tstz = (name) => timestamp(name, { withTimezone: true, mode: 'date' });
 const bytea = customType({ dataType: () => 'bytea' });
 
 // ---------- enums ----------
-export const userRole = pgEnum('user_role', ['agent', 'lead']);
+export const userRole = pgEnum('user_role', ['agent', 'lead', 'customer']);
 export const ticketPriority = pgEnum('ticket_priority', ['high', 'medium', 'low']);
 export const ticketStatus = pgEnum('ticket_status', ['new', 'open', 'waiting_on_customer', 'resolved', 'closed']);
 export const messageKind = pgEnum('message_kind', ['public', 'note']);
@@ -25,11 +25,14 @@ export const users = pgTable('users', {
   email: text('email').notNull(),
   passwordHash: text('password_hash').notNull(),
   role: userRole('role').notNull().default('agent'),
+  customerId: fk('customer_id').references(() => customers.id),
   active: boolean('active').notNull().default(true),
+  passwordChangeRequired: boolean('password_change_required').notNull().default(false),
   createdAt: tstz('created_at').notNull().defaultNow(),
   updatedAt: tstz('updated_at').notNull().defaultNow(),
 }, (t) => [
   uniqueIndex('users_email_uq').on(sql`lower(${t.email})`),
+  uniqueIndex('users_customer_id_uq').on(t.customerId).where(sql`${t.customerId} IS NOT NULL`),
   check('users_name_chk', sql`length(btrim(${t.name})) > 0`),
 ]);
 
@@ -205,15 +208,15 @@ export const ticketEvents = pgTable('ticket_events', {
 
 // ---------- views (created in the custom migration; declared here so queries are typed) ----------
 export const customerTickets = pgView('customer_tickets', {
-  id: bigint('id', { mode: 'number' }), ticketNo: integer('ticket_no'),
-  accessTokenHash: bytea('access_token_hash'), subject: text('subject'), status: ticketStatus('status'),
+  id: bigint('id', { mode: 'number' }), customerId: bigint('customer_id', { mode: 'number' }),
+  ticketNo: integer('ticket_no'), subject: text('subject'), status: ticketStatus('status'),
   createdAt: tstz('created_at'), resolvedAt: tstz('resolved_at'),
   reopenUntil: tstz('reopen_until'), closedAt: tstz('closed_at'),
 }).existing();
 
 export const customerMessages = pgView('customer_messages', {
   id: bigint('id', { mode: 'number' }), ticketId: bigint('ticket_id', { mode: 'number' }),
-  accessTokenHash: bytea('access_token_hash'), authorType: actorType('author_type'),
+  customerId: bigint('customer_id', { mode: 'number' }), authorType: actorType('author_type'),
   authorName: text('author_name'), body: text('body'), createdAt: tstz('created_at'),
 }).existing();
 

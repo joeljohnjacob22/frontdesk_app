@@ -22,6 +22,27 @@
       "when": 1795266481784,
       "tag": "0002_roles_optional",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1795324351584,
+      "tag": "0003_peaceful_true_believers",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795324397080,
+      "tag": "0004_dazzling_speedball",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795324401045,
+      "tag": "0005_customer-account-views",
+      "breakpoints": true
     }
   ]
 }

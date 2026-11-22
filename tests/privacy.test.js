@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sql } from 'drizzle-orm';
 import { createDb, createPool } from '../db/client.js';
-import { sha, createWorld, startServer } from './helpers/world.js';
+import { createWorld, startServer } from './helpers/world.js';
 
 // INC-0304: a private team note must never reach a customer. "Not on a screen. Not in an API response.
 // Not in an export. Not in a list." This file proves it for every customer-facing path that exists.
@@ -12,6 +11,7 @@ const PUBLIC_REPLY = 'PUBLIC-REPLY-5b2e77';
 const world = await createWorld();
 const http = await startServer(world);
 test.after(async () => { await http.close(); await world.drop(); });
+const customer = await http.loginAs('customer@arvo.test');
 
 // Every key name that must never appear anywhere in a customer-facing JSON document.
 const FORBIDDEN_KEYS = ['kind', 'priority', 'assignee', 'assigneeId', 'accessTokenHash', 'passwordHash', 'email',
@@ -26,18 +26,17 @@ function allKeys(value, out = new Set()) {
 
 // One ticket, one customer, one private note, one public agent reply.
 async function scenario() {
-  world.clock.set('2026-11-23 10:00');
-  const created = await http.anon.post('/api/customer/tickets', {
-    name: 'Priya', email: 'priya@customer.test', subject: 'Difficult customer', body: 'I need help now', priority: 'high',
+  world.clock.setMs(Date.now() + 60_000);
+  const created = await customer.post('/api/customer/tickets', {
+    subject: 'Difficult customer', body: 'I need help now', priority: 'high',
   });
-  const token = created.json.token;
-  const [{ id }] = (await world.db.execute(sql`select id from tickets where access_token_hash = ${sha(token)}`)).rows;
+  const id = created.json.ticket.id;
   const anil = await http.loginAs('anil@arvo.test');
   const priya = await http.loginAs('priya@arvo.test');
   await anil.post(`/api/agent/tickets/${id}/claim`);
   assert.equal((await priya.post(`/api/agent/tickets/${id}/notes`, { body: NOTE })).status, 201);   // another agent's note
   assert.equal((await anil.post(`/api/agent/tickets/${id}/replies`, { body: PUBLIC_REPLY })).status, 201);
-  return { token, id, anil, created };
+  return { id, anil, created };
 }
 
 test('POSITIVE CONTROL: the agent can see the note (so the leak tests below cannot pass vacuously)', async () => {
@@ -48,8 +47,8 @@ test('POSITIVE CONTROL: the agent can see the note (so the leak tests below cann
 });
 
 test('the customer ticket view never contains the note, and exposes no internal fields', async () => {
-  const { token } = await scenario();
-  const view = await http.anon.get(`/api/customer/tickets/${token}`);
+  const { id } = await scenario();
+  const view = await customer.get(`/api/customer/tickets/${id}`);
   assert.equal(view.status, 200);
   assert.ok(view.text.includes(PUBLIC_REPLY));                         // the public reply IS there
   assert.ok(!view.text.includes(NOTE));
@@ -59,16 +58,17 @@ test('the customer ticket view never contains the note, and exposes no internal 
 });
 
 test('customer write responses contain no message text and no note', async () => {
-  const { token } = await scenario();
-  const reply = await http.anon.post(`/api/customer/tickets/${token}/messages`, { body: 'Thanks, one more thing' });
+  const { id } = await scenario();
+  const reply = await customer.post(`/api/customer/tickets/${id}/messages`, { body: 'Thanks, one more thing' });
   assert.equal(reply.status, 201);
   assert.ok(!reply.text.includes(NOTE));
   assert.ok(!reply.text.includes(PUBLIC_REPLY));
-  assert.deepEqual(Object.keys(reply.json).sort(), ['outcome', 'ticketNo']);
-  const created = await http.anon.post('/api/customer/tickets', {
-    name: 'X', email: 'x@customer.test', subject: 'S', body: 'B',
+  assert.deepEqual(Object.keys(reply.json).sort(), ['outcome', 'ticketId', 'ticketNo']);
+  world.clock.setMs(Date.now() + 60_000);
+  const created = await customer.post('/api/customer/tickets', {
+    subject: 'S', body: 'B',
   });
-  assert.deepEqual(Object.keys(created.json).sort(), ['link', 'ticket', 'token']);
+  assert.deepEqual(Object.keys(created.json).sort(), ['ticket']);
 });
 
 test('the agent ticket LIST has no message text at all (no previews, snippets or last-message fields)', async () => {
@@ -86,10 +86,10 @@ test('the agent ticket LIST has no message text at all (no previews, snippets or
 });
 
 test('error responses leak nothing', async () => {
-  const { token } = await scenario();
+  const { id } = await scenario();
   const responses = [
-    await http.anon.get('/api/customer/tickets/wrong-token-wrong-token-wrong'),
-    await http.anon.post(`/api/customer/tickets/${token}/messages`, { body: '' }),
+    await customer.get('/api/customer/tickets/not-a-ticket-id'),
+    await customer.post(`/api/customer/tickets/${id}/messages`, { body: '' }),
     await http.anon.get('/api/agent/tickets'),                         // unauthenticated
   ];
   for (const r of responses) {
@@ -129,15 +129,17 @@ test('with the restricted role as the customer connection, the customer view sti
   const pool = restrictedPool();
   const restricted = await startServer(world, { customerDb: createDb(pool) });
   try {
-    const created = await restricted.anon.post('/api/customer/tickets', {
-      name: 'R', email: 'r@customer.test', subject: 'Role test', body: 'hello', priority: 'low',
+    const rCustomer = await restricted.loginAs('customer@arvo.test');
+    world.clock.setMs(Date.now() + 60_000);
+    const created = await rCustomer.post('/api/customer/tickets', {
+      subject: 'Role test', body: 'hello', priority: 'low',
     });
-    const [{ id }] = (await world.db.execute(sql`select id from tickets where access_token_hash = ${sha(created.json.token)}`)).rows;
+    const id = created.json.ticket.id;
     const anil = await restricted.loginAs('anil@arvo.test');
     await anil.post(`/api/agent/tickets/${id}/claim`);
     await anil.post(`/api/agent/tickets/${id}/notes`, { body: NOTE });
     await anil.post(`/api/agent/tickets/${id}/replies`, { body: PUBLIC_REPLY });
-    const view = await restricted.anon.get(`/api/customer/tickets/${created.json.token}`);
+    const view = await rCustomer.get(`/api/customer/tickets/${id}`);
     assert.equal(view.status, 200);                                     // if any query touched a table, this would be a 500
     assert.ok(view.text.includes(PUBLIC_REPLY));
     assert.ok(!view.text.includes(NOTE));

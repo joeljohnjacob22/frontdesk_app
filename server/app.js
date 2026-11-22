@@ -10,6 +10,8 @@ import { customerRoutes } from './routes/customer.js';
 import { loadEngineConfig } from './lib/engineConfig.js';
 import { createQueries } from './services/queries.js';
 import { createTicketService } from './services/tickets.js';
+import { createExportService } from './services/exports.js';
+import { createAccountService } from './services/accounts.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,6 +32,8 @@ export function createApp({
 
   const svc = createTicketService({ db, getEngine, ...(clock ? { clock } : {}) });
   const queries = createQueries({ db, customerDb, ...(clock ? { clock } : {}) });
+  const exports = createExportService({ db, customerDb });
+  const accounts = createAccountService({ db });
 
   app.get('/api/health', async (_req, res) => {
     try {
@@ -41,9 +45,9 @@ export function createApp({
     }
   });
 
-  app.use('/api/auth', authRoutes({ db, secret: sessionSecret, secureCookies }));
-  app.use('/api/agent', agentRoutes({ svc, queries }));
-  app.use('/api/customer', customerRoutes({ svc, queries }));
+  app.use('/api/auth', authRoutes({ db, accounts, secret: sessionSecret, secureCookies }));
+  app.use('/api/agent', agentRoutes({ svc, queries, exports, accounts }));
+  app.use('/api/customer', customerRoutes({ svc, queries, exports }));
 
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: { code: 'not_found', message: 'No such API route' } });

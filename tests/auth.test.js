@@ -12,7 +12,9 @@ test.after(async () => { await http.close(); await world.drop(); });
 test('login sets an HttpOnly, SameSite session cookie and returns the user without secrets', async () => {
   const res = await http.call('POST', '/api/auth/login', { body: { email: 'anil@arvo.test', password: PASSWORD } });
   assert.equal(res.status, 200);
-  assert.deepEqual(Object.keys(res.json.user).sort(), ['email', 'id', 'name', 'role']);
+  assert.deepEqual(Object.keys(res.json.user).sort(), ['email', 'id', 'name', 'passwordChangeRequired', 'role']);
+  assert.equal(res.json.user.role, 'agent');
+  assert.equal(res.json.user.passwordChangeRequired, false);
   assert.ok(!res.text.includes('passwordHash') && !res.text.includes('$2'));   // no bcrypt hash anywhere
   const cookie = res.headers.getSetCookie()[0];
   assert.match(cookie, new RegExp(`^${SESSION_COOKIE}=`));
@@ -52,6 +54,141 @@ test('a signed-in agent can read /me', async () => {
   const me = await anil.get('/api/auth/me');
   assert.equal(me.status, 200);
   assert.equal(me.json.user.email, 'anil@arvo.test');
+});
+
+test('customers can register but cannot choose another role', async () => {
+  const res = await http.call('POST', '/api/auth/register', {
+    body: {
+      name: 'New Customer',
+      email: 'new.customer@example.test',
+      password: 'a-valid-test-password',
+      role: 'lead',
+    },
+  });
+  assert.equal(res.status, 201);
+  assert.equal(res.json.user.role, 'customer');
+  assert.equal(res.json.user.passwordChangeRequired, false);
+  assert.ok(!res.text.includes('passwordHash') && !res.text.includes('$2'));
+  assert.match(res.headers.getSetCookie()[0], /HttpOnly/);
+
+  const duplicate = await http.call('POST', '/api/auth/register', {
+    body: { name: 'Duplicate', email: 'NEW.CUSTOMER@example.test', password: 'a-valid-test-password' },
+  });
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.json.error.code, 'email_in_use');
+});
+
+test('customer registration validates fields and password length', async () => {
+  for (const body of [
+    { name: '', email: 'new@example.test', password: 'a-valid-test-password' },
+    { name: 'New Customer', email: 'not-an-email', password: 'a-valid-test-password' },
+    { name: 'New Customer', email: 'new@example.test', password: 'short' },
+  ]) {
+    const response = await http.anon.post('/api/auth/register', body);
+    assert.equal(response.status, 400);
+    assert.equal(response.json.error.code, 'validation_error');
+  }
+});
+
+test('role guards keep customers and staff out of each other’s API areas', async () => {
+  const customer = await http.loginAs('customer@arvo.test');
+  const agent = await http.loginAs('anil@arvo.test');
+  assert.equal((await customer.get('/api/agent/tickets')).status, 403);
+  assert.equal((await customer.get('/api/customer/tickets')).status, 200);
+  assert.equal((await agent.get('/api/customer/tickets')).status, 403);
+});
+
+test('signed-in users can change their password', async () => {
+  const customer = await http.registerCustomer({
+    name: 'Password Change',
+    email: 'password.change@example.test',
+    password: 'starting-test-password',
+  });
+  const changed = await customer.post('/api/auth/change-password', {
+    currentPassword: 'starting-test-password',
+    newPassword: 'replacement-test-password',
+  });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.json.user.passwordChangeRequired, false);
+
+  const oldLogin = await http.call('POST', '/api/auth/login', {
+    body: { email: 'password.change@example.test', password: 'starting-test-password' },
+  });
+  const newLogin = await http.call('POST', '/api/auth/login', {
+    body: { email: 'password.change@example.test', password: 'replacement-test-password' },
+  });
+  assert.equal(oldLogin.status, 401);
+  assert.equal(newLogin.status, 200);
+});
+
+test('only a lead can issue temporary customer passwords, which are forced to change', async () => {
+  const customer = await http.registerCustomer({
+    name: 'Reset Customer',
+    email: 'reset.customer@example.test',
+    password: 'initial-reset-password',
+  });
+  const agent = await http.loginAs('anil@arvo.test');
+  const lead = await http.loginAs('meera@arvo.test');
+  assert.equal((await agent.get('/api/agent/customers')).status, 403);
+  assert.equal((await agent.post(`/api/agent/customers/${customer.json.user.id}/password-reset`)).status, 403);
+
+  const listed = await lead.get('/api/agent/customers');
+  assert.ok(listed.json.customers.some((account) => account.id === customer.json.user.id));
+  const reset = await lead.post(`/api/agent/customers/${customer.json.user.id}/password-reset`);
+  assert.equal(reset.status, 200);
+  assert.ok(reset.json.temporaryPassword.length >= 30);
+  assert.equal((await customer.get('/api/customer/tickets')).json.error.code, 'password_change_required');
+
+  const forcedLogin = await http.call('POST', '/api/auth/login', {
+    body: { email: 'reset.customer@example.test', password: reset.json.temporaryPassword },
+  });
+  assert.equal(forcedLogin.status, 200);
+  assert.equal(forcedLogin.json.user.passwordChangeRequired, true);
+  const forcedClient = await http.loginAs('reset.customer@example.test', reset.json.temporaryPassword);
+  assert.equal((await forcedClient.get('/api/customer/tickets')).status, 403);
+  const changed = await forcedClient.post('/api/auth/change-password', {
+    currentPassword: reset.json.temporaryPassword,
+    newPassword: 'customer-changed-password',
+  });
+  assert.equal(changed.status, 200);
+  assert.equal((await forcedClient.get('/api/customer/tickets')).status, 200);
+});
+
+test('only a lead can create agents and new agents must change their temporary password', async () => {
+  const agent = await http.loginAs('anil@arvo.test');
+  const lead = await http.loginAs('meera@arvo.test');
+  const input = {
+    name: 'New Agent',
+    email: 'new.agent@example.test',
+    role: 'lead',
+  };
+  assert.equal((await agent.post('/api/agent/users', input)).status, 403);
+
+  const created = await lead.post('/api/agent/users', input);
+  assert.equal(created.status, 201);
+  assert.equal(created.json.agent.role, 'agent');
+  assert.equal(created.json.agent.passwordChangeRequired, true);
+  assert.ok(created.json.temporaryPassword.length >= 30);
+  assert.ok(!created.text.includes('passwordHash') && !created.text.includes('$2'));
+
+  const listed = await lead.get('/api/agent/users');
+  assert.ok(listed.json.users.some((user) => user.email === input.email && user.role === 'agent'));
+
+  const duplicate = await lead.post('/api/agent/users', {
+    name: 'Duplicate Agent',
+    email: input.email.toUpperCase(),
+  });
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.json.error.code, 'email_in_use');
+
+  const newAgent = await http.loginAs(input.email, created.json.temporaryPassword);
+  assert.equal((await newAgent.get('/api/agent/tickets')).json.error.code, 'password_change_required');
+  const changed = await newAgent.post('/api/auth/change-password', {
+    currentPassword: created.json.temporaryPassword,
+    newPassword: 'new-agent-password-2026',
+  });
+  assert.equal(changed.status, 200);
+  assert.equal((await newAgent.get('/api/agent/tickets')).status, 200);
 });
 
 test('a tampered or garbage cookie is rejected', async () => {

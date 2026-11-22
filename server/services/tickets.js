@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
 import {
   customers,
   messages,
@@ -191,6 +191,16 @@ export function createTicketService({ db, getEngine, clock = dbClock }) {
         body: input.body,
         priority: input.priority,
       });
+    });
+  }
+
+  async function createTicketForCustomer(user, input) {
+    return inTx(async (tx, engine, now) => {
+      const [customer] = await tx.select().from(customers)
+        .where(eq(customers.id, user.customerId));
+      if (!customer) throw new HttpError(404, 'customer_not_found', 'Customer account not found');
+      const { ticket } = await createTicketInTx(tx, engine, now, customer, input);
+      return { ticket };
     });
   }
 
@@ -499,10 +509,16 @@ export function createTicketService({ db, getEngine, clock = dbClock }) {
     });
   }
 
-  async function customerMessage(token, body) {
+  async function customerMessageOperation(body, { token, ticketId, user }) {
     return inTx(async (tx, engine, now) => {
       const [ticket] = await tx.select().from(tickets)
-        .where(eq(tickets.accessTokenHash, hashToken(token)))
+        .where(user
+          ? and(
+            eq(tickets.id, ticketId),
+            eq(tickets.customerId, user.customerId),
+            gte(tickets.createdAt, user.createdAt),
+          )
+          : eq(tickets.accessTokenHash, hashToken(token)))
         .for('update');
       if (!ticket) throw missingTicket();
       const actor = customerActor(ticket.customerId);
@@ -640,12 +656,25 @@ export function createTicketService({ db, getEngine, clock = dbClock }) {
         actor,
         payload: { child_ticket_id: child.ticket.id },
       });
-      return { outcome: 'new_ticket', ticket: child.ticket, token: child.token };
+      return {
+        outcome: 'new_ticket',
+        ticket: child.ticket,
+        ...(user ? {} : { token: child.token }),
+      };
     });
+  }
+
+  function customerMessage(token, body) {
+    return customerMessageOperation(body, { token });
+  }
+
+  function customerReply(user, ticketId, body) {
+    return customerMessageOperation(body, { ticketId, user });
   }
 
   return {
     createTicket,
+    createTicketForCustomer,
     claimTicket,
     releaseTicket,
     reassignTicket,
@@ -654,5 +683,6 @@ export function createTicketService({ db, getEngine, clock = dbClock }) {
     setPriority,
     resolveTicket,
     customerMessage,
+    customerReply,
   };
 }

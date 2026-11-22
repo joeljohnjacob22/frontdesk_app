@@ -30,6 +30,19 @@
 | 2026-11-21 | Pauses extend only the resolution deadline, never the reply deadline. | A ticket can only wait on the customer after an agent has replied. |
 | 2026-11-21 | The SLA clock start is floored to a whole minute. | Budgets use whole minutes; flooring lets a ticket arriving at 18:29:30 receive a one-minute same-day budget. |
 | 2026-11-21 | Auto-close and reopen windows are 2700 business minutes from when waiting begins or the ticket is resolved. | The brief specifies about one working week. |
+| 2026-11-22 | The background tick runs immediately and then every `TICK_INTERVAL_MS` (60 seconds by default); overlapping runs are skipped in one process, and row locks coordinate multiple processes. | Breaches and due transitions must progress without waiting for another ticket request. |
+| 2026-11-22 | Tick deadlines are due at equality (`deadline <= now`). | A ticket should transition as soon as its configured deadline is reached. |
+| 2026-11-22 | A waiting ticket auto-closes when `auto_close_at` is reached, and a resolved ticket closes when `reopen_until` is reached. | The brief's "about one working week" rules need a consistent, testable boundary. |
+| 2026-11-22 | Customer exports contain only explicitly selected customer-view fields and public messages; agent exports omit team notes unless explicitly requested. | INC-0304 applies to exports as well as screens and API responses. |
+| 2026-11-22 | Exports are per-ticket JSON or CSV; PDF and bulk export are not included. | Keep the take-home scope small and avoid adding a document-generation dependency. |
+| 2026-11-22 | CSV formula-leading cells, including those preceded by leading ASCII whitespace, are apostrophe-prefixed; every field is quoted and embedded quotes are doubled. | Prevent spreadsheet formula interpretation and malformed CSV fields. |
+| 2026-11-22 | Each successful export writes an `export_generated` event containing only its format and note-inclusion flag. | Preserve an audit record without copying message content into the event chain. |
+| 2026-11-22 | `npm test` names the active `tests/*.test.js` files explicitly rather than using recursive default discovery. | The handoff's bundled reference project contains its own tests; recursive discovery would run every active test twice. Explicit file paths remain supported without passing an unsupported directory argument. |
+| 2026-11-22 | The development proxy forwards the browser's original `Host` header with `changeOrigin: false`. | The server compares `Origin` and `Host` on writes; forwarding the browser host keeps the dev proxy same-origin without weakening that check. |
+| 2026-11-22 | The seeded demo customer is created outside production only; self-registration remains available in production. | A shared demo password is for local testing, not a production customer identity. |
+| 2026-11-22 | Customer lists sort by latest public-message activity; “New reply” stays visible while staff authored the latest public message and clears when the customer replies. Agent lists retain late/due-date ordering. | The customer asked for activity ordering and an indicator that does not require separate read tracking, while agent queues must continue to surface SLA risk first. |
+| 2026-11-22 | Leads create agents with a generated temporary password that is shown once; the new agent must change it at first sign-in. | No email delivery is configured, so the lead can securely share an initial password without permitting public staff registration. |
+| 2026-11-22 | Production seeding refuses the local default password `frontdesk-demo`. | The seeded lead and agents are privileged accounts, so deployment must supply an explicit non-default `SEED_PASSWORD`. |
 
 ## Hosting readiness
 
@@ -40,5 +53,5 @@
 | Health check path | `/api/health` |
 | Environment variables | `DATABASE_URL`, `DATABASE_SSL=true` if required by the host, a long random `SESSION_SECRET`, `NODE_ENV=production`, `SEED_PASSWORD` |
 | Build gotcha | Hosts may set `NODE_ENV=production` during build and skip devDependencies. The `build` script uses `--include=dev` for the client so Vite is installed. |
-| One-time setup | Run `npm run db:seed` once against the hosted database, locally or from the host shell. |
+| One-time setup | Set a unique `SEED_PASSWORD`, then run `npm run db:seed` once against the hosted database, locally or from the host shell. Production seeding refuses `frontdesk-demo`. |
 | Host selection check | Free Postgres tiers can expire or pause. Confirm current free-tier limits; the app must remain available for the one-week test. |

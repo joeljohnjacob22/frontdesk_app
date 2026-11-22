@@ -5,6 +5,19 @@ import tailwindcss from '@tailwindcss/vite';
 // In development the browser talks to Vite (5173); /api is forwarded to Express (3000).
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  server: { port: 5173, proxy: { '/api': 'http://localhost:3000' } },
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: false,
+        configure(proxy) {
+          proxy.on('proxyReq', (proxyReq, request) => {
+            if (request.headers.host) proxyReq.setHeader('host', request.headers.host);
+          });
+        },
+      },
+    },
+  },
   build: { outDir: 'dist' },
 });

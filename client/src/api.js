@@ -1,4 +1,4 @@
-// One place for all HTTP calls. Same-origin cookies carry the agent session (added in a later step).
+// Same-origin requests carry the agent session cookie.
 export async function api(path, { method = 'GET', body } = {}) {
   const res = await fetch(`/api${path}`, {
     method,

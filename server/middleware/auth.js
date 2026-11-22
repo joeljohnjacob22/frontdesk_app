@@ -13,6 +13,9 @@ export function loadSession({ db, secret }) {
         name: users.name,
         email: users.email,
         role: users.role,
+        customerId: users.customerId,
+        passwordChangeRequired: users.passwordChangeRequired,
+        createdAt: users.createdAt,
       })
         .from(users)
         .where(and(eq(users.id, session.uid), eq(users.active, true)));
@@ -22,8 +25,30 @@ export function loadSession({ db, secret }) {
   };
 }
 
+export function requireAuthenticated(req, _res, next) {
+  if (!req.user) return next(new HttpError(401, 'unauthenticated', 'Please sign in'));
+  next();
+}
+
 export function requireAgent(req, _res, next) {
   if (!req.user) return next(new HttpError(401, 'unauthenticated', 'Please sign in'));
+  if (!['agent', 'lead'].includes(req.user.role)) {
+    return next(new HttpError(403, 'forbidden', 'Staff access required'));
+  }
+  if (req.user.passwordChangeRequired) {
+    return next(new HttpError(403, 'password_change_required', 'Change your password to continue'));
+  }
+  next();
+}
+
+export function requireCustomer(req, _res, next) {
+  if (!req.user) return next(new HttpError(401, 'unauthenticated', 'Please sign in'));
+  if (req.user.role !== 'customer' || req.user.customerId === null) {
+    return next(new HttpError(403, 'forbidden', 'Customer access required'));
+  }
+  if (req.user.passwordChangeRequired) {
+    return next(new HttpError(403, 'password_change_required', 'Change your password to continue'));
+  }
   next();
 }
 
@@ -31,6 +56,9 @@ export function requireLead(req, _res, next) {
   if (!req.user) return next(new HttpError(401, 'unauthenticated', 'Please sign in'));
   if (req.user.role !== 'lead') {
     return next(new HttpError(403, 'forbidden', 'Only a lead can do this'));
+  }
+  if (req.user.passwordChangeRequired) {
+    return next(new HttpError(403, 'password_change_required', 'Change your password to continue'));
   }
   next();
 }

@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { and, eq, isNull, inArray, sql } from 'drizzle-orm';
 import * as s from '../db/schema.js';
+import { seedUsers } from '../db/seed.js';
 import { createTestDb } from './helpers/testDb.js';
 import { rejectsPg } from './helpers/assertions.js';
 
@@ -46,8 +48,9 @@ test('INC-0291: two simultaneous claims, exactly one wins', async () => {
 });
 
 test('INC-0304: the customer view never contains a note', async () => {
+  const [customer] = await db.select().from(s.customers);
   const rows = await db.select().from(s.customerMessages)
-    .where(eq(s.customerMessages.accessTokenHash, sha(token)));
+    .where(eq(s.customerMessages.customerId, customer.id));
   assert.equal(rows.length, 1);
   assert.ok(!JSON.stringify(rows).includes('SECRET-SENTINEL'));
 });
@@ -81,4 +84,31 @@ test('status shape is enforced by the database', async () => {
   await rejectsPg(
     db.update(s.tickets).set({ status: 'waiting_on_customer' }).where(eq(s.tickets.id, ticketId)),
     /tickets_waiting_fields/);
+});
+
+test('production-style seeding omits the demo customer account', async () => {
+  const [before] = await db.select({ count: sql`count(*)::int` }).from(s.customers);
+  await seedUsers(db, 'temporary-test-password', { includeDemoCustomer: false });
+  const demoAccounts = await db.select().from(s.users)
+    .where(eq(s.users.email, 'customer@arvo.test'));
+  const [after] = await db.select({ count: sql`count(*)::int` }).from(s.customers);
+  assert.equal(demoAccounts.length, 0);
+  assert.equal(after.count, before.count);
+});
+
+test('production seeding refuses the default demo password', () => {
+  const env = {
+    ...process.env,
+    DATABASE_URL: ctx.url,
+    NODE_ENV: 'production',
+    SEED_PASSWORD: 'frontdesk-demo',
+    SESSION_SECRET: 'disposable-production-seed-test-secret',
+  };
+  const result = spawnSync(process.execPath, ['db/seed.js'], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    env,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Production seeding requires a non-default SEED_PASSWORD/);
 });

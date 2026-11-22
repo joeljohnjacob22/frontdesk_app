@@ -24,16 +24,18 @@ export function makeClock(start) {
 // Everything a lifecycle test needs: throwaway DB, seeded staff, engine, fake clock, services.
 export async function createWorld({ start = '2026-11-20 17:00' } = {}) {
   const ctx = await createTestDb();
-  await seedUsers(ctx.db, PASSWORD);
+  await seedUsers(ctx.db, PASSWORD, { includeDemoCustomer: true });
   const engine = await loadEngineConfig(ctx.db);
   const clock = makeClock(start);
   const svc = createTicketService({ db: ctx.db, getEngine: async () => engine, clock });
   const all = await ctx.db.select().from(users);
   const staff = Object.fromEntries(all.map((u) => [u.email.split('@')[0], u]));   // staff.meera, staff.anil, ...
+  const demoCustomer = all.find((user) => user.role === 'customer');
 
   return {
     ...ctx, engine, clock, svc, staff,
     lead: staff.meera, agent: staff.anil, agent2: staff.priya,
+    customer: demoCustomer,
     agents: all.filter((u) => u.role === 'agent'),
 
     async newTicket(overrides = {}) {
@@ -104,10 +106,7 @@ export async function startServer(world, { customerDb } = {}) {
     return { status: res.status, json, text, headers: res.headers };
   }
 
-  // Signs in and returns a small client that sends the session cookie.
-  async function loginAs(email, password = PASSWORD) {
-    const res = await call('POST', '/api/auth/login', { body: { email, password } });
-    assert.equal(res.status, 200, `login failed: ${res.text}`);
+  function authenticatedClient(res) {
     const cookie = res.headers.getSetCookie()[0].split(';')[0];
     return {
       cookie,
@@ -117,10 +116,30 @@ export async function startServer(world, { customerDb } = {}) {
     };
   }
 
+  // Signs in and returns a small client that sends the session cookie.
+  async function loginAs(email, password = PASSWORD) {
+    const res = await call('POST', '/api/auth/login', { body: { email, password } });
+    assert.equal(res.status, 200, `login failed: ${res.text}`);
+    return authenticatedClient(res);
+  }
+
+  async function registerCustomer({ name = 'Test Customer', email, password = PASSWORD }) {
+    const res = await call('POST', '/api/auth/register', { body: { name, email, password } });
+    assert.equal(res.status, 201, `registration failed: ${res.text}`);
+    return { ...authenticatedClient(res), json: res.json };
+  }
+
   const anon = {
     get: (p) => call('GET', p),
     post: (p, body = {}) => call('POST', p, { body }),
   };
 
-  return { base, call, loginAs, anon, close: () => new Promise((resolve) => server.close(resolve)) };
+  return {
+    base,
+    call,
+    loginAs,
+    registerCustomer,
+    anon,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
 }

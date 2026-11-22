@@ -7,7 +7,8 @@ const http = await startServer(world);
 test.after(async () => { await http.close(); await world.drop(); });
 
 const DAY = 86_400_000;
-const create = (body) => http.anon.post('/api/customer/tickets', {
+const customer = await http.loginAs('customer@arvo.test');
+const create = (body) => customer.post('/api/customer/tickets', {
   name: 'Cust', email: 'c@example.com', subject: 'Help', body: 'Please help', priority: 'high', ...body,
 });
 
@@ -23,14 +24,15 @@ test('every agent route needs a session', async () => {
 
 test('claim over HTTP: two agents at once, one 200 and one 409', async () => {
   world.clock.set('2026-11-23 10:00');
-  const { json } = await create({});
+  const created = await create({});
   const id = (await world.db.query.tickets.findFirst({ orderBy: (t, { desc }) => desc(t.id) })).id;
   const [anil, priya] = await Promise.all([http.loginAs('anil@arvo.test'), http.loginAs('priya@arvo.test')]);
   const [a, b] = await Promise.all([anil.post(`/api/agent/tickets/${id}/claim`), priya.post(`/api/agent/tickets/${id}/claim`)]);
   assert.deepEqual([a.status, b.status].sort(), [200, 409]);
   const loser = a.status === 409 ? a : b;
   assert.equal(loser.json.error.code, 'already_claimed');
-  assert.ok(json.token);
+  assert.equal(created.status, 201);
+  assert.ok(!created.text.includes('token'));
 });
 
 test('ticket list: flags, mine, sorting and NO message text', async () => {

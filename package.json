@@ -14,7 +14,7 @@
     "db:migrate": "node db/migrate.js",
     "db:seed": "node db/seed.js",
     "db:reset": "node db/reset.js",
-    "test": "node --test"
+    "test": "node --test tests/agentApi.test.js tests/auth.test.js tests/calendar.test.js tests/customerApi.test.js tests/db.test.js tests/engineConfig.test.js tests/exports.test.js tests/health.test.js tests/lifecycle.test.js tests/privacy.test.js tests/schema.test.js tests/sla.test.js tests/tick.test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
