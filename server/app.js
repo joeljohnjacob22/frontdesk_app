@@ -3,14 +3,33 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { sql } from 'drizzle-orm';
+import { loadSession, sameOrigin } from './middleware/auth.js';
+import { authRoutes } from './routes/auth.js';
+import { agentRoutes } from './routes/agent.js';
+import { customerRoutes } from './routes/customer.js';
+import { loadEngineConfig } from './lib/engineConfig.js';
+import { createQueries } from './services/queries.js';
+import { createTicketService } from './services/tickets.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-// A factory (not a singleton) so tests can build an app around a throwaway database.
-export function createApp({ db, clientDir = path.resolve(here, '../client/dist') } = {}) {
+export function createApp({
+  db,
+  customerDb = db,
+  getEngine = () => loadEngineConfig(db),
+  clock,
+  sessionSecret = 'dev-only-secret',
+  secureCookies = false,
+  clientDir = path.resolve(here, '../client/dist'),
+} = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '100kb' }));
+  app.use(sameOrigin);
+  app.use(loadSession({ db, secret: sessionSecret }));
+
+  const svc = createTicketService({ db, getEngine, ...(clock ? { clock } : {}) });
+  const queries = createQueries({ db, customerDb, ...(clock ? { clock } : {}) });
 
   app.get('/api/health', async (_req, res) => {
     try {
@@ -22,7 +41,9 @@ export function createApp({ db, clientDir = path.resolve(here, '../client/dist')
     }
   });
 
-  // Later steps mount here:  /api/agent/*  (session auth)   /api/customer/*  (ticket token)
+  app.use('/api/auth', authRoutes({ db, secret: sessionSecret, secureCookies }));
+  app.use('/api/agent', agentRoutes({ svc, queries }));
+  app.use('/api/customer', customerRoutes({ svc, queries }));
 
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: { code: 'not_found', message: 'No such API route' } });
@@ -38,12 +59,19 @@ export function createApp({ db, clientDir = path.resolve(here, '../client/dist')
   // Last: never leak SQL or stack traces to the client.
   // eslint-disable-next-line no-unused-vars
   app.use((err, _req, res, _next) => {
-    const status = err.status ?? 500;
+    let status = err.status ?? 500;
+    let code = typeof err.code === 'string' && status < 500 ? err.code : 'internal_error';
+    if (err.type === 'entity.parse.failed') {
+      status = 400;
+      code = 'invalid_json';
+    }
     if (status >= 500) console.error(err.cause?.message ?? err.stack ?? err);
     res.status(status).json({
       error: {
-        code: err.code && typeof err.code === 'string' && status < 500 ? err.code : 'internal_error',
-        message: status < 500 ? err.message : 'Something went wrong',
+        code,
+        message: status < 500
+          ? (code === 'invalid_json' ? 'Request body is not valid JSON' : err.message)
+          : 'Something went wrong',
       },
     });
   });

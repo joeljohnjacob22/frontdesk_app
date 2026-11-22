@@ -2,6 +2,21 @@
 
 | Date | Decision | Reason |
 |---|---|---|
+| 2026-11-22 | Customers choose severity when raising a ticket; medium is the default, and agents can change it. | Meera's tiers are defined by customer impact. Nobody else knows it at the start. |
+| 2026-11-22 | Only the owner can send a public reply or resolve; any signed-in staff member can add a team note. | INC-0291 (two conflicting answers). Notes are internal, so any teammate may help. |
+| 2026-11-22 | A lead can release, reassign, or change the priority of any ticket; the owner can release and change priority on their own. | Leads need a way out when an owner is away. |
+| 2026-11-22 | Only a public reply counts as the first response; a note never stops the reply clock. | A note is invisible to the customer. |
+| 2026-11-22 | A ticket becomes `waiting_on_customer` only through a public reply with `setWaiting: true`, which opens an SLA pause. | The pause rule is "we asked the customer a question". |
+| 2026-11-22 | Resolving while waiting closes the pause, and waiting time is not held against Arvo; the deadline is judged when the wait began. | Meera: "that week is not our fault". |
+| 2026-11-22 | A customer message on a resolved ticket inside the reopen window reopens it in a new SLA cycle with the same owner. | One endpoint, and Arvo learns what is still wrong. |
+| 2026-11-22 | A customer message on a closed ticket, or a resolved ticket past the window, creates a linked ticket with its own link; auto-closed tickets behave the same way. | Meera: "after that it is a new ticket", "they can always contact us again". |
+| 2026-11-22 | The database clock is the time authority; timestamps come from `clock_timestamp()` in the transaction, and tests inject a fake clock. | INC-0318: one source of truth for "when". |
+| 2026-11-22 | Breaches are recorded at write time as well as by the background job. | The job runs once a minute. A late reply must never go unrecorded if it has not run. |
+| 2026-11-22 | The agent ticket list never selects message text. | INC-0304: "Not in a list". No previews, no snippets. |
+| 2026-11-22 | Customer reads use `customer_*` views only, optionally through a view-only DB role (`CUSTOMER_DATABASE_URL`). | Defence in depth for INC-0304. |
+| 2026-11-22 | Sessions use a signed, HttpOnly, SameSite=Lax cookie for 12 hours, rechecked against the database on every request; cross-site writes are blocked by an Origin check. | No dependency. Deactivating a user takes effect immediately. |
+| 2026-11-22 | Unknown and malformed tokens both return `404 ticket_not_found`; login uses the same "Wrong email or password" message for unknown email and wrong password. | Do not reveal what exists. |
+| 2026-11-22 | Not built: login rate limiting, email verification or delivery, token rotation, list pagination, idle-lease auto-release, and live presence. | Out of an 8-hour scope. |
 | 2026-11-21 | Use `bcryptjs` for password hashing. | Pure JavaScript avoids native build requirements on deployment hosts. |
 | 2026-11-21 | Run tests with plain `node --test`, without a directory argument. | Node 22 does not support a directory argument such as `tests/`. |
 | 2026-11-21 | Run database migrations as part of `npm start`. | Each deployment brings the database schema up to date before starting the server. |
