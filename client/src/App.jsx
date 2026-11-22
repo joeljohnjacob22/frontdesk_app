@@ -657,13 +657,15 @@ function TicketDetail() {
   const [priority, setPriority] = useState('');
   const [assigneeId, setAssigneeId] = useState('');
 
-  const load = useCallback(async (showLoading = true) => {
+  const load = useCallback(async (showLoading = true, syncControls = true) => {
     if (showLoading) setLoading(true);
     try {
       const result = await request(`/agent/tickets/${encodeURIComponent(id)}`);
       setData(result);
-      setPriority(result.ticket.priority);
-      setAssigneeId(result.ticket.assignee?.id ? String(result.ticket.assignee.id) : '');
+      if (syncControls) {
+        setPriority(result.ticket.priority);
+        setAssigneeId(result.ticket.assignee?.id ? String(result.ticket.assignee.id) : '');
+      }
       setLoadError('');
     } catch (requestError) {
       setLoadError(friendlyError(requestError));
@@ -673,6 +675,10 @@ function TicketDetail() {
   }, [id, request]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const timer = window.setInterval(() => load(false, false), 15_000);
+    return () => window.clearInterval(timer);
+  }, [load]);
   useEffect(() => {
     if (user.role !== 'lead') return undefined;
     let active = true;
@@ -1126,20 +1132,24 @@ function CustomerDetail() {
   const [outcome, setOutcome] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       setTicket(await request(`/customer/tickets/${encodeURIComponent(id)}`));
       setError('');
     } catch (requestError) {
-      setTicket(null);
+      if (showLoading) setTicket(null);
       setError(friendlyError(requestError));
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }, [id, request]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    const timer = window.setInterval(() => load(false), 15_000);
+    return () => window.clearInterval(timer);
+  }, [load]);
 
   async function submitReply(event) {
     event.preventDefault();
@@ -1197,7 +1207,7 @@ function CustomerDetail() {
             <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-5 py-4">
               <div>
                 <h2 className="font-semibold text-slate-950">Conversation</h2>
-                <p className="mt-1 text-sm text-slate-600">Replies from you and the support team</p>
+                <p className="mt-1 text-sm text-slate-600">Replies from you and the support team · updates refresh every 15 seconds</p>
               </div>
               <StatusBadge status={ticket.status} />
             </header>
